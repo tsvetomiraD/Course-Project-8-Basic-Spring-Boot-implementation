@@ -1,32 +1,29 @@
 package my.spring.boot;
 
 import dic.Container;
-import jakarta.servlet.http.HttpServlet;
-import my.spring.boot.annotations.Autowired;
-import my.spring.boot.annotations.Configuration;
-import my.spring.boot.annotations.RequestMapping;
-import my.spring.boot.annotations.RestController;
+import jakarta.servlet.Servlet;
+import my.spring.boot.annotations.*;
 import org.apache.catalina.Context;
-import org.apache.catalina.LifecycleException;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.Tomcat;
+import org.apache.ibatis.annotations.Mapper;
 import org.apache.tomcat.util.descriptor.web.FilterDef;
 import org.apache.tomcat.util.descriptor.web.FilterMap;
-import rest.api.controller.CommentController;
-import rest.api.controller.PostController;
+import rest.api.Role;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class SpringApplication {
     List<String> names = new ArrayList<>();
-    Map<Class, String> classToPath = new HashMap<>();
+    Map<String, ControllerInfo> controllers = new HashMap<>();
+    Map<String, ControllerInfo> specialControllers = new HashMap<>();
     static Container container;
 
     private SpringApplication(Class<?> primarySource, String[] args) throws Exception {
@@ -41,28 +38,81 @@ public class SpringApplication {
         for (String name : names) {
             allClasses.addAll(findAllClassesUsingClassLoader(name));
         }
-        Tomcat tomcat = setTomcat();
+        List<Class<?>> classes = allClasses.stream().filter(c -> c != null).toList();
 
-        Context ctx = tomcat.addContext("/", new File(".").getAbsolutePath());
-
-        for (Class<?> cl : allClasses) {
-            if (cl == null)
-                continue;
-
+        List<Mapper> l = classes.stream().map(c -> c.getDeclaredAnnotation(Mapper.class)).toList();
+        Mapper mapper = l.stream().filter(c-> c != null).toList().get(0);
+        //Object m = container.
+        //System.out.println(mapper);
+        for (Class<?> cl : classes) {
             if (cl.isAnnotationPresent(RestController.class)) {
                 Class<?>[] interfaces = cl.getInterfaces();
-                addServlets(ctx, cl, interfaces);
+                addController(cl, interfaces[0]);
+                continue;
             }
             if (cl.isAnnotationPresent(Configuration.class)) {
                 //System.out.println(cl);
             }
         }
 
-
         //addFilters(ctx);
+        start();
+    }
 
-        //tomcat.start();
-        //tomcat.getServer().await();
+    private void addController(Class<?> cl, Class<?> interf) throws Exception {
+        //priemame che ima samo ein interface za daden controller
+        Object instance = container.getInstance(cl);
+
+        for (Field f : cl.getDeclaredFields()) {
+            if (f.isAnnotationPresent(Autowired.class)) {
+                Object field = container.getInstance(f.getType());
+                f.setAccessible(true);
+                f.set(instance, field);
+            }
+        }
+
+        RequestMapping requestMapping = interf.getAnnotation(RequestMapping.class);
+        String path = requestMapping.value();
+
+        if (path == null || path.equals("/default")) {
+            RequestMapping a = cl.getDeclaredAnnotation(RequestMapping.class);
+            path = a.value();
+        }
+
+        for (Method method : cl.getDeclaredMethods()) {
+            Annotation[] annotations = method.getAnnotations();
+            if (annotations.length == 0) {
+                Method m = interf.getMethod(method.getName(), method.getParameterTypes());
+                annotations = m.getAnnotations();
+            }
+            Annotation anno = annotations[0];
+            String value = String.valueOf(anno.annotationType().getMethod("value").invoke(anno));
+            String requestMethod = null;
+            String annoName = anno.annotationType().getSimpleName();
+
+            switch (annoName) {
+                case "GetMapping" -> requestMethod = "get";
+                case "PostMapping" -> requestMethod = "post";
+                case "PutMapping" -> requestMethod = "put";
+                case "DeleteMapping" -> requestMethod = "delete";
+            }
+
+            if (annotations.length == 2) {
+                anno = annotations[1];
+                if (!anno.annotationType().equals(Role.class)) {
+                    throw new Exception("Only one method annotation is allowed");
+                }
+                //todo check
+            }
+            ControllerInfo controllerInfo = new ControllerInfo(instance, method);
+            String key = requestMethod + path + value;
+            if (value.contains("{") && value.contains("}")) {
+                specialControllers.put(key, controllerInfo);
+                continue;
+            }
+
+            controllers.put(key, controllerInfo);
+        }
     }
 
     private static void addFilters(Context ctx) {
@@ -93,40 +143,20 @@ public class SpringApplication {
         ctx.addFilterMap(filterMapAuth);
     }
 
-    private static <T> void addServlets(Context ctx, Class<?> cl, Class<?>[] interfaces) throws Exception {
-        HttpServlet servlet = new HttpServletSetter();
-        Object instance = container.getInstance(cl);
-        for (Field f : cl.getDeclaredFields()) {
-            if (f.isAnnotationPresent(Autowired.class)) {
-                Object field = container.getInstance(f.getType());
-                f.setAccessible(true);
-                f.set(instance, field);
-                System.out.println(f.get(instance));
-            }
-        }
-        Tomcat.addServlet(ctx, cl.getName(), servlet);
-        String path = null;
-        for (Class<?> o : interfaces) {
-            if (path == null) {
-                RequestMapping a = o.getAnnotation(RequestMapping.class);
-                path = a.value();
-            }
-        }
-        if (path == null || path.equals("/default")) {
-            RequestMapping a = cl.getDeclaredAnnotation(RequestMapping.class);
-            path = a.value();
-        } //todo set path default to / and fix this checks
-
-        ctx.addServletMappingDecoded(path + "/*", cl.getName());
-    }
-
-    private static Tomcat setTomcat() {
+    private <T> void start() throws Exception {
         Tomcat tomcat = new Tomcat();
         Connector connector = new Connector();
         connector.setPort(80);
         tomcat.getService().addConnector(connector);
 
-        return tomcat;
+        Context ctx = tomcat.addContext("/", null);
+        Servlet servlet = new DispatcherServlet(controllers, specialControllers);
+        tomcat.addServlet("/", "DispatcherServlet", servlet);
+
+        ctx.addServletMappingDecoded("/*", "DispatcherServlet");
+
+        //tomcat.start();
+        //tomcat.getServer().await();
     }
 
     public static SpringApplication run(Class<?> primarySource, String[] args) { //todo change return type
