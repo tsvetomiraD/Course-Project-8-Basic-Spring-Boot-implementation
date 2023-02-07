@@ -40,17 +40,27 @@ public class SpringApplication {
         }
         List<Class<?>> classes = allClasses.stream().filter(c -> c != null).toList();
 
-        List<Mapper> l = classes.stream().map(c -> c.getDeclaredAnnotation(Mapper.class)).toList();
-        Mapper mapper = l.stream().filter(c-> c != null).toList().get(0);
-        //Object m = container.
-        //System.out.println(mapper);
-        for (Class<?> cl : classes) {
+        for (Class<?> clas : allClasses) {
+            if (clas == null) {
+                continue;
+            }
+            container.getInstance(clas);
+        }
+
+        for (Class<?> cl : allClasses) {
+            if (cl == null) {
+                continue;
+            }
             if (cl.isAnnotationPresent(RestController.class)) {
                 Class<?>[] interfaces = cl.getInterfaces();
                 addController(cl, interfaces[0]);
                 continue;
             }
             if (cl.isAnnotationPresent(Configuration.class)) {
+                //System.out.println(cl);
+            }
+            if (cl.isAnnotationPresent(Mapper.class)) {
+                System.out.println(container.getInstance(cl));
                 //System.out.println(cl);
             }
         }
@@ -62,7 +72,6 @@ public class SpringApplication {
     private void addController(Class<?> cl, Class<?> interf) throws Exception {
         //priemame che ima samo ein interface za daden controller
         Object instance = container.getInstance(cl);
-
         for (Field f : cl.getDeclaredFields()) {
             if (f.isAnnotationPresent(Autowired.class)) {
                 Object field = container.getInstance(f.getType());
@@ -155,11 +164,14 @@ public class SpringApplication {
 
         ctx.addServletMappingDecoded("/*", "DispatcherServlet");
 
-        //tomcat.start();
-        //tomcat.getServer().await();
+        tomcat.start();
+        tomcat.getServer().await();
     }
 
     public static SpringApplication run(Class<?> primarySource, String[] args) { //todo change return type
+        if (!primarySource.isAnnotationPresent(SpringBootApplication.class)) {
+            throw new RuntimeException("Web application could not be started as there was no org.springframework.boot.web.servlet.server.ServletWebServerFactory bean defined in the context.");
+        }
         try {
             return new SpringApplication(primarySource, args);
         } catch (Exception e) {
